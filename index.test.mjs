@@ -637,3 +637,62 @@ test("search cleans track names, prioritizes ID3 tags, and strips audio file ext
   assert.equal(res.tracks[0].artists[0].name, "Real Artist");
   assert.equal(res.tracks[1].name, "02.Filename Fallback");
 });
+
+// 16. Album list pre-resolves missing covers from cloud and persists to cache
+test("browse all_albums pre-resolves missing covers via cloud fallback and caches them", async () => {
+  const initialSession = {
+    baseUrl: "http://192.168.1.50:5000",
+    sid: "sid_test",
+    username: "user",
+    account: { id: "user", name: "user" },
+  };
+
+  const handler = async (url) => {
+    if (url.includes("api=SYNO.AudioStation.Album&method=list")) {
+      return jsonResponse({
+        success: true,
+        data: {
+          total: 1,
+          albums: [
+            {
+              name: "21st Century Breakdown",
+              display_artist: "Green Day",
+              album_artist: "Green Day",
+              year: 2009,
+            },
+          ],
+        },
+      });
+    }
+    if (url.includes("cover.cgi") && url.includes("method=getcover")) {
+      // Simulate DSM returning 404 for this album
+      return new Response("Not Found", { status: 404 });
+    }
+    if (url.includes("music.163.com/api/search/get/web")) {
+      return jsonResponse({
+        result: {
+          albums: [
+            {
+              name: "21st Century Breakdown",
+              picUrl: "https://p2.music.126.net/mock-greenday.jpg",
+            },
+          ],
+        },
+      });
+    }
+    throw new Error(`Unhandled: ${url}`);
+  };
+
+  const { plugin, storageMap } = await setup(handler, {}, { session: initialSession });
+  const result = await plugin.browse({ page: "all_albums" });
+
+  assert.equal(result.sections[0].albums.length, 1);
+  const album = result.sections[0].albums[0];
+  assert.equal(album.name, "21st Century Breakdown");
+  assert.equal(album.imageUrl, "https://p2.music.126.net/mock-greenday.jpg");
+
+  // Verify it was stored in coverCache
+  const cache = storageMap.get("coverCache");
+  assert.ok(cache);
+  assert.equal(cache["21st Century Breakdown///Green Day"], "https://p2.music.126.net/mock-greenday.jpg");
+});

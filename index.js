@@ -18,11 +18,36 @@ const DSM_AUTH_ERRORS = {
 // Cached session state in memory (lazy-loaded from host.storage)
 let session = null;
 let likedCache = null;
+let coverCache = null;
 
 function fail(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function getCoverCache() {
+  if (!coverCache) {
+    coverCache = host.storage.get("coverCache") || {};
+  }
+  return coverCache;
+}
+
+function saveCoverToCache(id, name, url) {
+  if (!url) return;
+  const cache = getCoverCache();
+  if (id) cache[id] = url;
+  if (name) cache[name] = url;
+  try {
+    host.storage.set("coverCache", cache);
+  } catch {}
+}
+
+function getCachedCover(id, name) {
+  const cache = getCoverCache();
+  if (id && cache[id]) return cache[id];
+  if (name && cache[name]) return cache[name];
+  return null;
 }
 
 function currentSession() {
@@ -437,6 +462,47 @@ async function fetchCloudCover(albumName, artistName) {
 }
 
 /**
+ * Probe album covers and pre-resolve missing ones via cloud fallback.
+ * Checks in parallel with a concurrency limit or slice to keep UI snappy.
+ */
+async function enrichAlbumsWithCovers(albumList, sess, maxToProbe = 30) {
+  if (!Array.isArray(albumList) || albumList.length === 0 || !sess?.baseUrl) {
+    return;
+  }
+
+  const toCheck = albumList.slice(0, maxToProbe);
+  await Promise.allSettled(
+    toCheck.map(async (a) => {
+      const name = a.name || a.title;
+      if (!name) return;
+      const artist = a.display_artist || a.album_artist || a.artist || "";
+      const id = artist ? `${name}///${artist}` : name;
+
+      // Skip if already in cover cache
+      if (getCachedCover(id, name)) {
+        return;
+      }
+
+      const coverUrl = `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getcover&album_name=${encodeURIComponent(name)}&album_artist_name=${encodeURIComponent(artist)}&_sid=${sess.sid}`;
+
+      try {
+        const res = await fetch(coverUrl, { method: "HEAD" });
+        if (res.status === 200) {
+          return;
+        }
+        // Missing on DSM (404), fetch cloud cover
+        const cloud = await fetchCloudCover(name, artist);
+        if (cloud) {
+          saveCoverToCache(id, name, cloud);
+        }
+      } catch {
+        // Network error, ignore
+      }
+    })
+  );
+}
+
+/**
  * Convert Synology song item to MyGo Music Track model.
  */
 function toTrack(item, sess, fallbackCoverUrl) {
@@ -466,7 +532,8 @@ function toTrack(item, sess, fallbackCoverUrl) {
     ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getsongcover&id=${encodeURIComponent(id)}&_sid=${sess.sid}`
     : "";
 
-  const coverUrl = fallbackCoverUrl || songCoverUrl;
+  const cachedAlbumCover = getCachedCover(albumId, albumName);
+  const coverUrl = fallbackCoverUrl || cachedAlbumCover || songCoverUrl;
 
   return {
     id,
@@ -489,9 +556,15 @@ function toAlbum(item, sess) {
   const name = item.name || item.title || "未知专辑";
   const artist = item.display_artist || item.album_artist || item.artist || "";
   const id = artist ? `${name}///${artist}` : name;
-  const coverUrl = sess?.baseUrl
-    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getcover&album_name=${encodeURIComponent(name)}&album_artist_name=${encodeURIComponent(artist)}&_sid=${sess.sid}`
-    : "";
+
+  // 1. Check persistent cover cache first (e.g. cloud cover resolved earlier)
+  const cached = getCachedCover(id, name);
+  let coverUrl = cached || "";
+
+  // 2. If not cached, build Synology DSM cover URL
+  if (!coverUrl && sess?.baseUrl) {
+    coverUrl = `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getcover&album_name=${encodeURIComponent(name)}&album_artist_name=${encodeURIComponent(artist)}&_sid=${sess.sid}`;
+  }
 
   return {
     id,
@@ -679,6 +752,7 @@ export async function home() {
     sections.push({ title: "随心漫游", tracks: randomSongs.map((s) => toTrack(s, sess)) });
   }
   if (albums.length > 0) {
+    await enrichAlbumsWithCovers(albums, sess, 15);
     sections.push({ title: "热门专辑", albums: albums.map((a) => toAlbum(a, sess)) });
   }
   if (playlists.length > 0) {
@@ -718,6 +792,7 @@ export async function browse({ page }) {
       limit: "2000",
     });
     const albums = data.albums || [];
+    await enrichAlbumsWithCovers(albums, sess, 35);
     return {
       title: "专辑列表",
       subtitle: `共 ${data.total || albums.length} 张专辑`,
@@ -963,13 +1038,14 @@ export async function album({ id }) {
     songs[0]?.artist ||
     "";
 
-  // Build album cover URL
-  let albumCoverUrl = sess?.baseUrl
-    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getcover&album_name=${encodeURIComponent(albumName)}&album_artist_name=${encodeURIComponent(effectiveArtist)}&_sid=${sess.sid}`
-    : "";
+  // Build album cover URL - check persistent cache first
+  let albumCoverUrl = getCachedCover(id, albumName) || "";
+  if (!albumCoverUrl && sess?.baseUrl) {
+    albumCoverUrl = `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getcover&album_name=${encodeURIComponent(albumName)}&album_artist_name=${encodeURIComponent(effectiveArtist)}&_sid=${sess.sid}`;
+  }
 
   // Check if album cover on NAS exists; if 404, fallback to cloud cover or first song cover
-  if (albumCoverUrl) {
+  if (albumCoverUrl && !albumCoverUrl.startsWith("http://p") && !albumCoverUrl.startsWith("https://p") && !albumCoverUrl.includes("apple.com")) {
     try {
       const probe = await fetch(albumCoverUrl, { method: "HEAD" });
       if (probe.status !== 200) {
@@ -977,10 +1053,14 @@ export async function album({ id }) {
         const cloudCover = await fetchCloudCover(albumName, effectiveArtist);
         if (cloudCover) {
           albumCoverUrl = cloudCover;
+          saveCoverToCache(id, albumName, cloudCover);
         } else if (songs[0]?.id) {
           // Fallback 2: Try first song's embedded cover
           albumCoverUrl = `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getsongcover&id=${encodeURIComponent(songs[0].id)}&_sid=${sess.sid}`;
+          saveCoverToCache(id, albumName, albumCoverUrl);
         }
+      } else {
+        saveCoverToCache(id, albumName, albumCoverUrl);
       }
     } catch {
       // Keep synology cover url on network probe error
