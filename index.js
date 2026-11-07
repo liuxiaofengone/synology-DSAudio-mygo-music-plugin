@@ -417,45 +417,76 @@ async function synoRequest(api, method, version, params = {}, sessionOverride = 
 }
 
 /**
- * Query high-resolution album cover from cloud services (NetEase Cloud Music & iTunes).
+ * Clean album name by removing bracketed notes (e.g. [Japanese Edition], (Live), (EP)).
+ */
+function cleanAlbumQuery(albumName, artistName) {
+  const cleanName = albumName.replace(/\s*[\(\[\{（【][^\)\]\}）】]*[\)\]\}）】]/g, "").trim() || albumName;
+  if (artistName) {
+    return `${cleanName} ${artistName}`.trim();
+  }
+  return cleanName;
+}
+
+/**
+ * Query high-resolution album cover from cloud services (QQ Music, NetEase Cloud Music & iTunes).
  */
 async function fetchCloudCover(albumName, artistName) {
   if (!albumName) return null;
-  const query = `${albumName} ${artistName || ""}`.trim();
+  const queries = [
+    cleanAlbumQuery(albumName, artistName),
+    `${albumName} ${artistName || ""}`.trim(),
+  ];
 
-  // Try NetEase Cloud Music first
-  try {
-    const url = `https://music.163.com/api/search/get/web?csrf_token=&hlpretag=&hlposttag=&s=${encodeURIComponent(query)}&type=10&offset=0&total=true&limit=1`;
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)",
-        Referer: "https://music.163.com",
-      },
-    });
-    if (res.ok) {
-      const json = await res.json();
-      const alb = json.result?.albums?.[0];
-      if (alb?.picUrl) {
-        return alb.picUrl;
+  for (const query of queries) {
+    // 1. QQ Music API (Fastest response, no rate limiting, high quality 500x500 artwork)
+    try {
+      const qqUrl = `https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=1&w=${encodeURIComponent(query)}&format=json&t=8`;
+      const res = await fetch(qqUrl, { headers: { Referer: "https://y.qq.com" } });
+      if (res.ok) {
+        const json = await res.json();
+        const mid = json.data?.album?.list?.[0]?.albumMID;
+        if (mid) {
+          return `https://y.qq.com/music/photo_new/T002R500x500M000${mid}.jpg`;
+        }
       }
+    } catch {
+      // Fall through
     }
-  } catch {
-    // Fall through to iTunes
-  }
 
-  // Fallback to Apple iTunes Search API
-  try {
-    const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=album&limit=1`;
-    const res = await fetch(itunesUrl);
-    if (res.ok) {
-      const json = await res.json();
-      const alb = json.results?.[0];
-      if (alb?.artworkUrl100) {
-        return alb.artworkUrl100.replace("100x100bb", "600x600bb");
+    // 2. NetEase Cloud Music API
+    try {
+      const url = `https://music.163.com/api/search/get/web?csrf_token=&hlpretag=&hlposttag=&s=${encodeURIComponent(query)}&type=10&offset=0&total=true&limit=1`;
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)",
+          Referer: "https://music.163.com",
+        },
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const alb = json.result?.albums?.[0];
+        if (alb?.picUrl) {
+          return alb.picUrl;
+        }
       }
+    } catch {
+      // Fall through
     }
-  } catch {
-    // Return null if both fail
+
+    // 3. Apple iTunes Search API
+    try {
+      const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=album&limit=1`;
+      const res = await fetch(itunesUrl);
+      if (res.ok) {
+        const json = await res.json();
+        const alb = json.results?.[0];
+        if (alb?.artworkUrl100) {
+          return alb.artworkUrl100.replace("100x100bb", "600x600bb");
+        }
+      }
+    } catch {
+      // Fall through
+    }
   }
 
   return null;
@@ -465,41 +496,66 @@ async function fetchCloudCover(albumName, artistName) {
  * Probe album covers and pre-resolve missing ones via cloud fallback.
  * Checks in parallel with a concurrency limit or slice to keep UI snappy.
  */
-async function enrichAlbumsWithCovers(albumList, sess, maxToProbe = 30) {
+async function enrichAlbumsWithCovers(albumList, sess, maxSyncProbe = 50) {
   if (!Array.isArray(albumList) || albumList.length === 0 || !sess?.baseUrl) {
     return;
   }
 
-  const toCheck = albumList.slice(0, maxToProbe);
+  const uncompleted = albumList.filter((a) => {
+    const name = a.name || a.title;
+    if (!name) return false;
+    const artist = a.display_artist || a.album_artist || a.artist || "";
+    const id = artist ? `${name}///${artist}` : name;
+    return !getCachedCover(id, name);
+  });
+
+  const syncBatch = uncompleted.slice(0, maxSyncProbe);
   await Promise.allSettled(
-    toCheck.map(async (a) => {
+    syncBatch.map(async (a) => {
       const name = a.name || a.title;
-      if (!name) return;
       const artist = a.display_artist || a.album_artist || a.artist || "";
       const id = artist ? `${name}///${artist}` : name;
-
-      // Skip if already in cover cache
-      if (getCachedCover(id, name)) {
-        return;
-      }
-
       const coverUrl = `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getcover&album_name=${encodeURIComponent(name)}&album_artist_name=${encodeURIComponent(artist)}&_sid=${sess.sid}`;
-
       try {
         const res = await fetch(coverUrl, { method: "HEAD" });
         if (res.status === 200) {
+          saveCoverToCache(id, name, coverUrl);
           return;
         }
-        // Missing on DSM (404), fetch cloud cover
         const cloud = await fetchCloudCover(name, artist);
         if (cloud) {
           saveCoverToCache(id, name, cloud);
         }
-      } catch {
-        // Network error, ignore
-      }
+      } catch {}
     })
   );
+
+  // Progressive background scan for any remaining items
+  const remaining = uncompleted.slice(maxSyncProbe);
+  if (remaining.length > 0) {
+    (async () => {
+      for (let i = 0; i < remaining.length; i += 10) {
+        const batch = remaining.slice(i, i + 10);
+        await Promise.allSettled(
+          batch.map(async (a) => {
+            const name = a.name || a.title;
+            const artist = a.display_artist || a.album_artist || a.artist || "";
+            const id = artist ? `${name}///${artist}` : name;
+            const coverUrl = `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getcover&album_name=${encodeURIComponent(name)}&album_artist_name=${encodeURIComponent(artist)}&_sid=${sess.sid}`;
+            try {
+              const res = await fetch(coverUrl, { method: "HEAD" });
+              if (res.status === 200) {
+                saveCoverToCache(id, name, coverUrl);
+                return;
+              }
+              const cloud = await fetchCloudCover(name, artist);
+              if (cloud) saveCoverToCache(id, name, cloud);
+            } catch {}
+          })
+        );
+      }
+    })().catch(() => {});
+  }
 }
 
 /**
