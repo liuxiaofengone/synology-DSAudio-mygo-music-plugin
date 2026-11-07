@@ -288,6 +288,43 @@ async function resolveQuickConnect(qcId) {
   return relayFallback;
 }
 
+const API_PATHS = {
+  "SYNO.API.Auth": "entry.cgi",
+  "SYNO.AudioStation.Song": "AudioStation/song.cgi",
+  "SYNO.AudioStation.Album": "AudioStation/album.cgi",
+  "SYNO.AudioStation.Artist": "AudioStation/artist.cgi",
+  "SYNO.AudioStation.Playlist": "AudioStation/playlist.cgi",
+  "SYNO.AudioStation.Search": "AudioStation/search.cgi",
+  "SYNO.AudioStation.Lyrics": "AudioStation/lyrics.cgi",
+  "SYNO.AudioStation.Cover": "AudioStation/cover.cgi",
+  "SYNO.AudioStation.Stream": "AudioStation/stream.cgi",
+  "SYNO.AudioStation.Info": "AudioStation/info.cgi",
+  "SYNO.AudioStation.Pin": "entry.cgi",
+};
+
+let apiInfoCache = null;
+
+async function resolveApiPath(api, sess) {
+  if (apiInfoCache && apiInfoCache[api]?.path) {
+    return apiInfoCache[api].path;
+  }
+  if (!apiInfoCache && sess?.baseUrl) {
+    try {
+      const res = await fetch(`${sess.baseUrl}/webapi/query.cgi?api=SYNO.API.Info&version=1&method=query&query=ALL`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.data) {
+          apiInfoCache = json.data;
+          if (apiInfoCache[api]?.path) return apiInfoCache[api].path;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return API_PATHS[api] || "entry.cgi";
+}
+
 /**
  * Universal Synology DSM Web API call.
  */
@@ -304,7 +341,8 @@ async function synoRequest(api, method, version, params = {}, sessionOverride = 
     query.set("_sid", sess.sid);
   }
 
-  const endpoint = `${sess.baseUrl}/webapi/entry.cgi`;
+  const apiPath = await resolveApiPath(api, sess);
+  const endpoint = `${sess.baseUrl}/webapi/${apiPath}`;
   let res;
   try {
     res = await fetch(`${endpoint}?${query.toString()}`, {
@@ -346,7 +384,7 @@ function toTrack(item, sess) {
   const durationSec = item.additional?.song_audio?.duration || 0;
 
   const coverUrl = sess?.baseUrl
-    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi/cover.jpg?api=SYNO.AudioStation.Cover&version=1&method=getcover&id=${encodeURIComponent(id)}&_sid=${sess.sid}`
+    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getsongcover&id=${encodeURIComponent(id)}&_sid=${sess.sid}`
     : "";
 
   return {
@@ -370,7 +408,7 @@ function toAlbum(item, sess) {
   const name = item.name || item.title || "未知专辑";
   const artist = item.display_artist || item.album_artist || item.artist || "";
   const coverUrl = sess?.baseUrl
-    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi/cover.jpg?api=SYNO.AudioStation.Cover&version=1&method=getcover&album_name=${encodeURIComponent(name)}&album_artist_name=${encodeURIComponent(artist)}&_sid=${sess.sid}`
+    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getalbumcover&album_name=${encodeURIComponent(name)}&album_artist_name=${encodeURIComponent(artist)}&_sid=${sess.sid}`
     : "";
 
   return {
@@ -388,7 +426,7 @@ function toAlbum(item, sess) {
 function toArtist(item, sess) {
   const name = item.name || "未知歌手";
   const coverUrl = sess?.baseUrl
-    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi/cover.jpg?api=SYNO.AudioStation.Cover&version=1&method=getcover&artist_name=${encodeURIComponent(name)}&_sid=${sess.sid}`
+    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=1&method=getcover&artist_name=${encodeURIComponent(name)}&_sid=${sess.sid}`
     : "";
 
   return {
@@ -738,6 +776,7 @@ export async function playlist({ id }) {
 export async function album({ id }) {
   const sess = await requireSession();
   const data = await synoRequest("SYNO.AudioStation.Song", "list", 3, {
+    album_name: id,
     album: id,
     additional: "song_audio,song_tag",
     limit: "500",
@@ -757,12 +796,14 @@ export async function artist({ id }) {
   const sess = await requireSession();
   const [songRes, albumRes] = await Promise.allSettled([
     synoRequest("SYNO.AudioStation.Song", "list", 3, {
+      artist_name: id,
       artist: id,
       additional: "song_audio,song_tag",
       limit: "50",
       library: "all",
     }),
     synoRequest("SYNO.AudioStation.Album", "list", 3, {
+      artist_name: id,
       artist: id,
       additional: "avg_rating",
       limit: "50",
