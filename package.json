@@ -1,6 +1,6 @@
 {
   "name": "synology-dsaudio-mygo-music-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Synology Audio Station (DS Audio) plugin for MyGo Music",
   "type": "module",
   "repository": {
