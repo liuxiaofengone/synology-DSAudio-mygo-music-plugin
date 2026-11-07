@@ -2,6 +2,12 @@
 
 [MyGo Music](https://music.egoist.dev/) 播放器的第三方插件，用于在原生桌面客户端中直接接入群晖 NAS 的 **Audio Station (DS Audio)** 媒体库，享受丝滑的原生本地级播放体验。
 
+<p align="center">
+  <a href="mygo-music://install-plugin?repo=liuxiaofengone/synologo-dsaudio-mygomusic">
+    <img src="https://img.shields.io/badge/Install%20in-MyGo%20Music-E53935?style=for-the-badge&logo=apple-music&logoColor=white" alt="Install in MyGo Music" />
+  </a>
+</p>
+
 ---
 
 ## ✨ 核心特性
@@ -27,13 +33,21 @@
 
 ## 🚀 安装方法
 
-### 方式一：通过 GitHub 仓库在线安装（推荐）
+### 方式一：一键快速安装（推荐）
+
+直接点击顶部的 **[Install in MyGo Music](mygo-music://install-plugin?repo=liuxiaofengone/synologo-dsaudio-mygomusic)** 徽章，或在系统浏览器中访问以下协议链接，MyGo Music 客户端将自动唤醒并提示一键下载安装：
+
+```text
+mygo-music://install-plugin?repo=liuxiaofengone/synologo-dsaudio-mygomusic
+```
+
+### 方式二：在客户端内搜索或通过 GitHub 安装
 
 1. 打开 **MyGo Music** 客户端，进入 **设置 (Settings)** -> **插件 (Plugins)** -> 点击右上角 **`+`**。
-2. 选择 **从 GitHub 安装**。
-3. 输入仓库地址：`liuxiaofengone/synologo-dsaudio-mygomusic` 即可一键安装并保持更新。
+2. 可直接搜索插件名称，或选择 **从 GitHub 安装** 并输入：`liuxiaofengone/synologo-dsaudio-mygomusic`。
+3. 安装完成后，客户端会自动检测并支持在线静默更新。
 
-### 方式二：从本地 ZIP 压缩包导入
+### 方式三：从本地 ZIP 压缩包导入
 
 1. 在本项目中执行打包命令（或从 GitHub Releases 下载构建好的 ZIP）：
    ```bash
