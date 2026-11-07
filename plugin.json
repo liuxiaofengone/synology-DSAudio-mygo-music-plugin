@@ -1,0 +1,40 @@
+{
+  "id": "synology-audio",
+  "name": "群晖 Audio Station",
+  "version": "0.1.0",
+  "main": "index.js",
+  "playback": "stream",
+  "permissions": {
+    "network": ["*"]
+  },
+  "settings": [
+    {
+      "key": "server",
+      "label": "QuickConnect ID 或 服务器地址",
+      "help": "支持填入 QuickConnect ID（如 mynas）或直连地址（如 192.168.1.100:5000 或 https://nas.example.com:5001）"
+    },
+    {
+      "key": "username",
+      "label": "用户名",
+      "help": "DSM 登录用户名"
+    },
+    {
+      "key": "password",
+      "label": "密码",
+      "help": "DSM 登录密码"
+    },
+    {
+      "key": "otp",
+      "label": "2FA 动态验证码 (可选)",
+      "help": "若账号开启了两步验证，首次登录时在此填写 6 位动态验证码"
+    }
+  ],
+  "navigation": [
+    { "title": "媒体库主页", "builtin": "home" },
+    { "title": "全部歌曲", "page": "all_songs", "icon": "note" },
+    { "title": "专辑列表", "page": "all_albums", "icon": "album" },
+    { "title": "歌手列表", "page": "all_artists", "icon": "artist" },
+    { "title": "我的歌单", "page": "playlists", "icon": "playlist" },
+    { "title": "我喜欢的音乐", "builtin": "liked" }
+  ]
+}

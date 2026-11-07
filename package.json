@@ -1,0 +1,12 @@
+{
+  "name": "synology-dsaudio-mygomusic",
+  "version": "0.1.0",
+  "description": "Synology Audio Station (DS Audio) plugin for MyGo Music",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "check": "node --check index.js",
+    "test": "node --test index.test.mjs",
+    "pack": "python3 pack.py"
+  }
+}
