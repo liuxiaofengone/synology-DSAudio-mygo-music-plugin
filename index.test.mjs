@@ -237,11 +237,11 @@ test("search correctly maps DSM responses to MyGo Track models", async () => {
   };
 
   const handler = async (url) => {
-    if (url.includes("api=SYNO.AudioStation.Song&method=search")) {
+    if (url.includes("api=SYNO.AudioStation.Search&method=list")) {
       return jsonResponse({
         success: true,
         data: {
-          total: 1,
+          songTotal: 1,
           songs: [
             {
               id: "music_2001",
@@ -388,4 +388,157 @@ test("signOut removes session from storage", async () => {
   plugin.signOut();
   assert.equal(await plugin.account(), null);
   assert.equal(storageMap.has("session"), false);
+});
+
+// 11. Folder browsing for root and child directories
+test("browse folder:root lists top-level directories as navigation links", async () => {
+  const initialSession = {
+    baseUrl: "http://192.168.1.50:5000",
+    sid: "sid_test",
+    username: "user",
+    account: { id: "user", name: "user" },
+  };
+
+  const handler = async (url) => {
+    if (url.includes("api=SYNO.AudioStation.Folder&method=list")) {
+      const u = new URL(url);
+      const folderId = u.searchParams.get("id");
+      if (!folderId) {
+        return jsonResponse({
+          success: true,
+          data: {
+            total: 2,
+            items: [
+              { id: "dir_1", title: "内地歌手", path: "/Music/内地歌手", type: "folder" },
+              { id: "dir_2", title: "港台歌手", path: "/Music/港台歌手", type: "folder" },
+            ],
+          },
+        });
+      }
+      if (folderId === "dir_1") {
+        return jsonResponse({
+          success: true,
+          data: {
+            total: 2,
+            items: [
+              { id: "dir_10", title: "超级市场", path: "/Music/内地歌手/超级市场", type: "folder" },
+              {
+                id: "music_301",
+                title: "测试曲目",
+                path: "/Music/内地歌手/测试曲目.flac",
+                type: "file",
+                additional: {
+                  song_audio: { duration: 180 },
+                  song_tag: { artist: "内地歌手", album: "合辑" },
+                },
+              },
+            ],
+          },
+        });
+      }
+    }
+    throw new Error(`Unhandled: ${url}`);
+  };
+
+  const { plugin } = await setup(handler, {}, { session: initialSession });
+
+  // Root folders
+  const root = await plugin.browse({ page: "folder:root" });
+  assert.equal(root.title, "文件夹");
+  assert.equal(root.sections.length, 1);
+  assert.equal(root.sections[0].links.length, 2);
+  assert.equal(root.sections[0].links[0].text, "内地歌手");
+  assert.equal(root.sections[0].links[0].page, "folder:dir_1");
+
+  // Child directory with both subfolders and files
+  const child = await plugin.browse({ page: "folder:dir_1" });
+  assert.equal(child.title, "内地歌手");
+  assert.equal(child.sections.length, 2);
+  assert.equal(child.sections[0].links[0].text, "超级市场");
+  assert.equal(child.sections[1].tracks[0].name, "测试曲目");
+});
+
+// 12. Album tracks query with spaces in title
+test("album query retrieves songs using album parameter with percent-encoded spaces", async () => {
+  const initialSession = {
+    baseUrl: "http://192.168.1.50:5000",
+    sid: "sid_test",
+    username: "user",
+    account: { id: "user", name: "user" },
+  };
+
+  const handler = async (url) => {
+    if (url.includes("api=SYNO.AudioStation.Song&method=list")) {
+      assert.ok(url.includes("album=10%20DAY'S"));
+      assert.ok(!url.includes("10+DAY"));
+      return jsonResponse({
+        success: true,
+        data: {
+          total: 1,
+          songs: [
+            {
+              id: "music_36460",
+              title: "此时此刻",
+              additional: {
+                song_audio: { duration: 240 },
+                song_tag: { album: "10 DAY'S", artist: "旅行团乐队" },
+              },
+            },
+          ],
+        },
+      });
+    }
+    throw new Error(`Unhandled: ${url}`);
+  };
+
+  const { plugin } = await setup(handler, {}, { session: initialSession });
+  const result = await plugin.album({ id: "10 DAY'S" });
+
+  assert.equal(result.album.name, "10 DAY'S");
+  assert.ok(result.album.imageUrl.includes("method=getcover"));
+  assert.equal(result.tracks.length, 1);
+  assert.equal(result.tracks[0].name, "此时此刻");
+});
+
+// 13. MP4 / M4A direct streaming without transcoding
+test("stream handles mp4 audio container as native m4a stream", async () => {
+  const initialSession = {
+    baseUrl: "http://192.168.1.50:5000",
+    sid: "sid_test",
+    username: "user",
+    account: { id: "user", name: "user" },
+  };
+
+  const handler = async (url) => {
+    if (url.includes("api=SYNO.AudioStation.Song&method=getinfo")) {
+      return jsonResponse({
+        success: true,
+        data: {
+          songs: [
+            {
+              id: "music_33915",
+              title: "A Murder Of Crows",
+              additional: {
+                song_audio: {
+                  container: "mp4",
+                  codec: "aac",
+                  filesize: 21524595,
+                  bitrate: 256000,
+                },
+              },
+            },
+          ],
+        },
+      });
+    }
+    throw new Error(`Unhandled: ${url}`);
+  };
+
+  const { plugin } = await setup(handler, {}, { session: initialSession });
+  const res = await plugin.stream({ id: "music_33915" });
+
+  assert.equal(res.type, "m4a");
+  assert.ok(res.url.includes("stream.cgi/0.m4a"));
+  assert.ok(res.url.includes("method=stream"));
+  assert.ok(!res.url.includes("transcode"));
 });

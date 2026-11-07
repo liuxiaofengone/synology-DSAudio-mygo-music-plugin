@@ -34,6 +34,7 @@
     { "title": "全部歌曲", "page": "all_songs", "icon": "note" },
     { "title": "专辑列表", "page": "all_albums", "icon": "album" },
     { "title": "歌手列表", "page": "all_artists", "icon": "artist" },
+    { "title": "文件夹", "page": "folder:root", "icon": "playlist" },
     { "title": "我的歌单", "page": "playlists", "icon": "playlist" },
     { "title": "我喜欢的音乐", "builtin": "liked" }
   ]

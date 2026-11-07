@@ -294,6 +294,7 @@ const API_PATHS = {
   "SYNO.AudioStation.Album": "AudioStation/album.cgi",
   "SYNO.AudioStation.Artist": "AudioStation/artist.cgi",
   "SYNO.AudioStation.Playlist": "AudioStation/playlist.cgi",
+  "SYNO.AudioStation.Folder": "AudioStation/folder.cgi",
   "SYNO.AudioStation.Search": "AudioStation/search.cgi",
   "SYNO.AudioStation.Lyrics": "AudioStation/lyrics.cgi",
   "SYNO.AudioStation.Cover": "AudioStation/cover.cgi",
@@ -303,6 +304,21 @@ const API_PATHS = {
 };
 
 let apiInfoCache = null;
+
+/**
+ * Standard RFC 3986 percent-encoded query string builder.
+ * Unlike URLSearchParams which converts spaces to '+', Synology DSM CGI
+ * backend specifically requires '%20' for spaces in album/artist/song names.
+ */
+function buildQueryString(params) {
+  const parts = [];
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) {
+      parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
+    }
+  }
+  return parts.join("&");
+}
 
 async function resolveApiPath(api, sess) {
   if (apiInfoCache && apiInfoCache[api]?.path) {
@@ -330,22 +346,24 @@ async function resolveApiPath(api, sess) {
  */
 async function synoRequest(api, method, version, params = {}, sessionOverride = null) {
   const sess = sessionOverride || (await requireSession());
-  const query = new URLSearchParams({
+  const queryParams = {
     api,
     method,
     version: String(version),
     ...params,
-  });
+  };
 
   if (sess.sid) {
-    query.set("_sid", sess.sid);
+    queryParams._sid = sess.sid;
   }
 
   const apiPath = await resolveApiPath(api, sess);
   const endpoint = `${sess.baseUrl}/webapi/${apiPath}`;
+  const qs = buildQueryString(queryParams);
+
   let res;
   try {
-    res = await fetch(`${endpoint}?${query.toString()}`, {
+    res = await fetch(`${endpoint}?${qs}`, {
       method: "GET",
       headers: { Accept: "application/json" },
     });
@@ -408,7 +426,7 @@ function toAlbum(item, sess) {
   const name = item.name || item.title || "未知专辑";
   const artist = item.display_artist || item.album_artist || item.artist || "";
   const coverUrl = sess?.baseUrl
-    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getalbumcover&album_name=${encodeURIComponent(name)}&album_artist_name=${encodeURIComponent(artist)}&_sid=${sess.sid}`
+    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getcover&album_name=${encodeURIComponent(name)}&album_artist_name=${encodeURIComponent(artist)}&_sid=${sess.sid}`
     : "";
 
   return {
@@ -618,8 +636,7 @@ export async function browse({ page }) {
       additional: "song_audio,song_tag",
       sort_by: "title",
       sort_direction: "ASC",
-      limit: "100",
-      library: "all",
+      limit: "10000",
     });
     const songs = data.songs || [];
     return {
@@ -634,8 +651,7 @@ export async function browse({ page }) {
       additional: "avg_rating",
       sort_by: "name",
       sort_direction: "ASC",
-      limit: "100",
-      library: "all",
+      limit: "2000",
     });
     const albums = data.albums || [];
     return {
@@ -650,14 +666,70 @@ export async function browse({ page }) {
       additional: "avg_rating",
       sort_by: "name",
       sort_direction: "ASC",
-      limit: "100",
-      library: "all",
+      limit: "2000",
     });
     const artists = data.artists || [];
     return {
       title: "歌手列表",
       subtitle: `共 ${data.total || artists.length} 位歌手`,
       sections: [{ artists: artists.map((a) => toArtist(a, sess)) }],
+    };
+  }
+
+  if (page === "folders" || page.startsWith("folder:")) {
+    const isRoot = page === "folders" || page === "folder:root" || page === "folder:";
+    const folderId = isRoot ? "" : page.replace(/^folder:/, "");
+
+    const params = {
+      limit: "2000",
+      additional: "song_audio,song_tag",
+    };
+    if (folderId) {
+      params.id = folderId;
+    }
+
+    const data = await synoRequest("SYNO.AudioStation.Folder", "list", 2, params);
+    const items = data.items || [];
+    const subfolders = items.filter((it) => it.type === "folder");
+    const files = items.filter((it) => it.type === "file");
+
+    const sections = [];
+    if (subfolders.length > 0) {
+      sections.push({
+        title: subfolders.length > 0 && files.length > 0 ? "子文件夹" : undefined,
+        links: subfolders.map((f) => ({
+          text: f.title || f.path?.split("/").pop() || "未命名文件夹",
+          page: `folder:${f.id}`,
+          type: "folder",
+        })),
+      });
+    }
+    if (files.length > 0) {
+      sections.push({
+        title: subfolders.length > 0 ? "曲目" : undefined,
+        tracks: files.map((s) => toTrack(s, sess)),
+      });
+    }
+
+    // Determine current folder name & path for header
+    let title = "文件夹";
+    let subtitle = "群晖 NAS 音乐目录";
+    if (!isRoot) {
+      const sampleItem = items[0];
+      if (sampleItem?.path) {
+        const parts = sampleItem.path.split("/").filter(Boolean);
+        const dirParts = parts.slice(0, -1);
+        title = dirParts[dirParts.length - 1] || "文件夹";
+        subtitle = "/" + dirParts.join("/");
+      } else {
+        title = `文件夹 (${folderId})`;
+      }
+    }
+
+    return {
+      title,
+      subtitle: `${subtitle} · 共 ${subfolders.length} 个文件夹, ${files.length} 首曲目`,
+      sections,
     };
   }
 
@@ -676,59 +748,41 @@ export async function search({ query, kind = "tracks", offset = 0 }) {
   const sess = await requireSession();
   const limit = 30;
 
-  if (kind === "tracks") {
-    const data = await synoRequest("SYNO.AudioStation.Song", "search", 3, {
-      title: query,
+  if (kind === "tracks" || kind === "albums" || kind === "artists") {
+    const data = await synoRequest("SYNO.AudioStation.Search", "list", 1, {
       keyword: query,
       additional: "song_audio,song_tag,song_rating",
       limit: String(limit),
       offset: String(offset),
-      library: "all",
     });
-    const songs = data.songs || [];
-    return {
-      tracks: songs.map((s) => toTrack(s, sess)),
-      more: offset + songs.length < (data.total || 0),
-    };
-  }
 
-  if (kind === "albums") {
-    const data = await synoRequest("SYNO.AudioStation.Album", "list", 3, {
-      keyword: query,
-      filter: query,
-      additional: "avg_rating",
-      limit: String(limit),
-      offset: String(offset),
-      library: "all",
-    });
-    const albums = data.albums || [];
-    return {
-      albums: albums.map((a) => toAlbum(a, sess)),
-      more: offset + albums.length < (data.total || 0),
-    };
-  }
-
-  if (kind === "artists") {
-    const data = await synoRequest("SYNO.AudioStation.Artist", "list", 3, {
-      keyword: query,
-      filter: query,
-      additional: "avg_rating",
-      limit: String(limit),
-      offset: String(offset),
-      library: "all",
-    });
-    const artists = data.artists || [];
-    return {
-      artists: artists.map((a) => toArtist(a, sess)),
-      more: offset + artists.length < (data.total || 0),
-    };
+    if (kind === "tracks") {
+      const songs = data.songs || [];
+      return {
+        tracks: songs.map((s) => toTrack(s, sess)),
+        more: offset + songs.length < (data.songTotal || 0),
+      };
+    }
+    if (kind === "albums") {
+      const albums = data.albums || [];
+      return {
+        albums: albums.map((a) => toAlbum(a, sess)),
+        more: offset + albums.length < (data.albumTotal || 0),
+      };
+    }
+    if (kind === "artists") {
+      const artists = data.artists || [];
+      return {
+        artists: artists.map((a) => toArtist(a, sess)),
+        more: offset + artists.length < (data.artistTotal || 0),
+      };
+    }
   }
 
   if (kind === "playlists") {
     const data = await synoRequest("SYNO.AudioStation.Playlist", "list", 3, {
       limit: "100",
       offset: "0",
-      library: "all",
     });
     const all = (data.playlists || []).map(toPlaylist);
     const qLower = query.toLowerCase();
@@ -776,15 +830,17 @@ export async function playlist({ id }) {
 export async function album({ id }) {
   const sess = await requireSession();
   const data = await synoRequest("SYNO.AudioStation.Song", "list", 3, {
-    album_name: id,
     album: id,
     additional: "song_audio,song_tag",
-    limit: "500",
-    library: "all",
+    limit: "1000",
   });
   const songs = data.songs || [];
   const firstSong = songs[0];
-  const artistName = firstSong?.additional?.song_tag?.artist || firstSong?.artist || "";
+  const artistName =
+    firstSong?.additional?.song_tag?.album_artist ||
+    firstSong?.additional?.song_tag?.artist ||
+    firstSong?.artist ||
+    "";
 
   return {
     album: toAlbum({ name: id, display_artist: artistName }, sess),
@@ -796,18 +852,14 @@ export async function artist({ id }) {
   const sess = await requireSession();
   const [songRes, albumRes] = await Promise.allSettled([
     synoRequest("SYNO.AudioStation.Song", "list", 3, {
-      artist_name: id,
       artist: id,
       additional: "song_audio,song_tag",
-      limit: "50",
-      library: "all",
+      limit: "500",
     }),
     synoRequest("SYNO.AudioStation.Album", "list", 3, {
-      artist_name: id,
       artist: id,
       additional: "avg_rating",
-      limit: "50",
-      library: "all",
+      limit: "500",
     }),
   ]);
 
@@ -909,6 +961,11 @@ export async function stream({ id }) {
 
   const audio = songInfo?.additional?.song_audio || {};
   let ext = (audio.container || audio.codec || "mp3").toLowerCase();
+
+  // Container mp4 maps directly to m4a stream without forced transcoding
+  if (ext === "mp4") {
+    ext = "m4a";
+  }
 
   const supportedFormats = ["mp3", "flac", "ogg", "wav", "m4a", "aac"];
   let method = "stream";
