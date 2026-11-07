@@ -696,3 +696,38 @@ test("browse all_albums pre-resolves missing covers via cloud fallback and cache
   assert.ok(cache);
   assert.equal(cache["21st Century Breakdown///Green Day"], "https://p2.music.126.net/mock-greenday.jpg");
 });
+
+// 17. Search suggestions autocompletion
+test("suggest returns deduplicated song, album, and artist suggestions", async () => {
+  const initialSession = {
+    baseUrl: "http://192.168.1.50:5000",
+    sid: "sid_test",
+    username: "user",
+    account: { id: "user", name: "user" },
+  };
+
+  const handler = async (url) => {
+    if (url.includes("api=SYNO.AudioStation.Search&method=list")) {
+      return jsonResponse({
+        success: true,
+        data: {
+          songs: [{ title: "Viva La Vida.mp3" }, { title: "Viva Hate" }],
+          albums: [{ name: "Viva La Vida or Death and All His Friends" }],
+          artists: [{ name: "Coldplay" }],
+        },
+      });
+    }
+    throw new Error(`Unhandled: ${url}`);
+  };
+
+  const { plugin } = await setup(handler, {}, { session: initialSession });
+  const suggestions = await plugin.suggest({ query: "Viva" });
+
+  assert.deepEqual(suggestions, [
+    "Viva La Vida",
+    "Viva Hate",
+    "Viva La Vida or Death and All His Friends",
+    "Coldplay",
+  ]);
+});
+

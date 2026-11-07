@@ -1,11 +1,11 @@
 {
-  "name": "synology-dsaudio-mygomusic",
+  "name": "synology-dsaudio-mygo-music-plugin",
   "version": "0.1.0",
   "description": "Synology Audio Station (DS Audio) plugin for MyGo Music",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/liuxiaofengone/synologo-dsaudio-mygomusic.git"
+    "url": "https://github.com/liuxiaofengone/synology-DSAudio-mygo-music-plugin.git"
   },
   "license": "MIT",
   "scripts": {

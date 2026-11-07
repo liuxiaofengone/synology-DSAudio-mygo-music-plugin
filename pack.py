@@ -9,7 +9,7 @@ dist_dir = root / "dist"
 dist_dir.mkdir(exist_ok=True)
 destination = dist_dir / f"{manifest['id']}-{manifest['version']}.zip"
 
-files_to_pack = ["plugin.json", "index.js", "README.md", "LICENSE"]
+files_to_pack = ["plugin.json", "index.js", "README.md", "LICENSE", "icon.png"]
 
 with ZipFile(destination, "w", compression=ZIP_DEFLATED) as archive:
     for name in files_to_pack:

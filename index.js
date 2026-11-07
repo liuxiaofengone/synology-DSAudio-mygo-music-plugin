@@ -1028,6 +1028,33 @@ export async function search({ query, kind = "tracks", offset = 0 }) {
   return { tracks: [], more: false };
 }
 
+export async function suggest({ query }) {
+  if (!query || !query.trim()) return [];
+  try {
+    await requireSession();
+    const data = await synoRequest("SYNO.AudioStation.Search", "list", 1, {
+      keyword: query.trim(),
+      limit: "8",
+    });
+    const results = [];
+    for (const s of data.songs || []) {
+      const title = (s.title || "").replace(/\.(mp3|flac|m4a|aac|wav|ogg|dsf|dff|ape|wma|aiff)$/i, "").trim();
+      if (title && !results.includes(title)) results.push(title);
+    }
+    for (const a of data.albums || []) {
+      const name = (a.name || "").trim();
+      if (name && !results.includes(name)) results.push(name);
+    }
+    for (const ar of data.artists || []) {
+      const name = (ar.name || "").trim();
+      if (name && !results.includes(name)) results.push(name);
+    }
+    return results.slice(0, 8);
+  } catch {
+    return [];
+  }
+}
+
 export async function playlists() {
   const sess = await requireSession();
   const data = await synoRequest("SYNO.AudioStation.Playlist", "list", 3, {
