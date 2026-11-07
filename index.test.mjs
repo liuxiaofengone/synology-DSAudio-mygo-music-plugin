@@ -447,13 +447,17 @@ test("browse folder:root lists top-level directories as navigation links", async
   assert.equal(root.title, "文件夹");
   assert.equal(root.sections.length, 1);
   assert.equal(root.sections[0].links.length, 2);
+  assert.equal(root.sections[0].links[0].title, "内地歌手");
+  assert.equal(root.sections[0].links[0].name, "内地歌手");
   assert.equal(root.sections[0].links[0].text, "内地歌手");
-  assert.equal(root.sections[0].links[0].page, "folder:dir_1");
+  assert.equal(root.sections[0].links[0].page, "folder:dir_1:%E5%86%85%E5%9C%B0%E6%AD%8C%E6%89%8B");
 
   // Child directory with both subfolders and files
-  const child = await plugin.browse({ page: "folder:dir_1" });
+  const child = await plugin.browse({ page: "folder:dir_1:%E5%86%85%E5%9C%B0%E6%AD%8C%E6%89%8B" });
   assert.equal(child.title, "内地歌手");
   assert.equal(child.sections.length, 2);
+  assert.equal(child.sections[0].links[0].title, "超级市场");
+  assert.equal(child.sections[0].links[0].name, "超级市场");
   assert.equal(child.sections[0].links[0].text, "超级市场");
   assert.equal(child.sections[1].tracks[0].name, "测试曲目");
 });
@@ -541,4 +545,95 @@ test("stream handles mp4 audio container as native m4a stream", async () => {
   assert.ok(res.url.includes("stream.cgi/0.m4a"));
   assert.ok(res.url.includes("method=stream"));
   assert.ok(!res.url.includes("transcode"));
+});
+
+// 14. Composite album ID disambiguation and artist filtering
+test("album parses composite id and filters songs by artist", async () => {
+  const initialSession = {
+    baseUrl: "http://192.168.1.50:5000",
+    sid: "sid_test",
+    username: "user",
+    account: { id: "user", name: "user" },
+  };
+
+  const handler = async (url) => {
+    if (url.includes("api=SYNO.AudioStation.Song&method=list")) {
+      assert.ok(url.includes("album=50%20Classical%20Masterworks"));
+      assert.ok(url.includes("artist=%E5%8F%A4%E5%B0%94%E5%BE%B7%20%E6%BC%94%E5%A5%8F"));
+      return jsonResponse({
+        success: true,
+        data: {
+          total: 1,
+          songs: [
+            {
+              id: "music_38195",
+              title: "哥德堡变奏曲",
+              additional: {
+                song_audio: { duration: 180 },
+                song_tag: { album: "50 Classical Masterworks", artist: "古尔德 演奏" },
+              },
+            },
+          ],
+        },
+      });
+    }
+    throw new Error(`Unhandled: ${url}`);
+  };
+
+  const { plugin } = await setup(handler, {}, { session: initialSession });
+  const result = await plugin.album({ id: "50 Classical Masterworks///古尔德 演奏" });
+
+  assert.equal(result.album.id, "50 Classical Masterworks///古尔德 演奏");
+  assert.equal(result.album.name, "50 Classical Masterworks");
+  assert.equal(result.album.artists[0].name, "古尔德 演奏");
+  assert.equal(result.tracks.length, 1);
+  assert.equal(result.tracks[0].name, "哥德堡变奏曲");
+});
+
+// 15. Track title ID3 metadata cleaning and file extension stripping
+test("search cleans track names, prioritizes ID3 tags, and strips audio file extensions", async () => {
+  const initialSession = {
+    baseUrl: "http://192.168.1.50:5000",
+    sid: "sid_test",
+    username: "user",
+    account: { id: "user", name: "user" },
+  };
+
+  const handler = async (url) => {
+    if (url.includes("api=SYNO.AudioStation.Search&method=list")) {
+      return jsonResponse({
+        success: true,
+        data: {
+          songTotal: 2,
+          songs: [
+            {
+              id: "music_100",
+              title: "01.Track Name.flac",
+              path: "/Music/Artist/Album/01.Track Name.flac",
+              additional: {
+                song_tag: { title: "True ID3 Title", artist: "Real Artist", album: "Real Album" },
+                song_audio: { duration: 200 },
+              },
+            },
+            {
+              id: "music_101",
+              title: "",
+              path: "/Music/Artist/Album/02.Filename Fallback.m4a",
+              additional: {
+                song_audio: { duration: 150 },
+              },
+            },
+          ],
+        },
+      });
+    }
+    throw new Error(`Unhandled: ${url}`);
+  };
+
+  const { plugin } = await setup(handler, {}, { session: initialSession });
+  const res = await plugin.search({ query: "Test", kind: "tracks" });
+
+  assert.equal(res.tracks[0].name, "True ID3 Title");
+  assert.equal(res.tracks[0].artists[0].name, "Real Artist");
+  assert.equal(res.tracks[1].name, "02.Filename Fallback");
 });

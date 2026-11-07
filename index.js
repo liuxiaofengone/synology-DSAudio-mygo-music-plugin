@@ -392,25 +392,88 @@ async function synoRequest(api, method, version, params = {}, sessionOverride = 
 }
 
 /**
+ * Query high-resolution album cover from cloud services (NetEase Cloud Music & iTunes).
+ */
+async function fetchCloudCover(albumName, artistName) {
+  if (!albumName) return null;
+  const query = `${albumName} ${artistName || ""}`.trim();
+
+  // Try NetEase Cloud Music first
+  try {
+    const url = `https://music.163.com/api/search/get/web?csrf_token=&hlpretag=&hlposttag=&s=${encodeURIComponent(query)}&type=10&offset=0&total=true&limit=1`;
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)",
+        Referer: "https://music.163.com",
+      },
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const alb = json.result?.albums?.[0];
+      if (alb?.picUrl) {
+        return alb.picUrl;
+      }
+    }
+  } catch {
+    // Fall through to iTunes
+  }
+
+  // Fallback to Apple iTunes Search API
+  try {
+    const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=album&limit=1`;
+    const res = await fetch(itunesUrl);
+    if (res.ok) {
+      const json = await res.json();
+      const alb = json.results?.[0];
+      if (alb?.artworkUrl100) {
+        return alb.artworkUrl100.replace("100x100bb", "600x600bb");
+      }
+    }
+  } catch {
+    // Return null if both fail
+  }
+
+  return null;
+}
+
+/**
  * Convert Synology song item to MyGo Music Track model.
  */
-function toTrack(item, sess) {
+function toTrack(item, sess, fallbackCoverUrl) {
   const id = String(item.id);
-  const title = item.title || item.path?.split("/").pop() || "未知曲目";
-  const artistName = item.additional?.song_tag?.artist || item.artist || "未知歌手";
-  const albumName = item.additional?.song_tag?.album || item.album || "未知专辑";
-  const durationSec = item.additional?.song_audio?.duration || 0;
+  const tag = item.additional?.song_tag || {};
+  const audio = item.additional?.song_audio || {};
 
-  const coverUrl = sess?.baseUrl
+  // Clean title: prefer ID3 tag title, fallback to DSM title, then path basename
+  let title = tag.title || item.title || "";
+  if (!title && item.path) {
+    title = item.path.split("/").pop() || "";
+  }
+  // Strip audio file extensions if present in title
+  title = title.replace(/\.(mp3|flac|m4a|aac|wav|ogg|dsf|dff|ape|wma|aiff)$/i, "").trim() || "未知曲目";
+
+  // Artist: prefer ID3 tag artist, then album_artist, then item.artist
+  const artistName = tag.artist || tag.album_artist || item.artist || "未知歌手";
+
+  // Album: prefer ID3 tag album, then item.album
+  const albumName = tag.album || item.album || "未知专辑";
+
+  const durationSec = audio.duration || 0;
+
+  const albumId = artistName && artistName !== "未知歌手" ? `${albumName}///${artistName}` : albumName;
+
+  const songCoverUrl = sess?.baseUrl
     ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getsongcover&id=${encodeURIComponent(id)}&_sid=${sess.sid}`
     : "";
+
+  const coverUrl = fallbackCoverUrl || songCoverUrl;
 
   return {
     id,
     name: title,
     artists: [{ id: artistName, name: artistName }],
     album: {
-      id: albumName,
+      id: albumId,
       name: albumName,
       imageUrl: coverUrl,
       artists: [{ id: artistName, name: artistName }],
@@ -425,12 +488,13 @@ function toTrack(item, sess) {
 function toAlbum(item, sess) {
   const name = item.name || item.title || "未知专辑";
   const artist = item.display_artist || item.album_artist || item.artist || "";
+  const id = artist ? `${name}///${artist}` : name;
   const coverUrl = sess?.baseUrl
     ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getcover&album_name=${encodeURIComponent(name)}&album_artist_name=${encodeURIComponent(artist)}&_sid=${sess.sid}`
     : "";
 
   return {
-    id: name,
+    id,
     name,
     imageUrl: coverUrl,
     artists: artist ? [{ id: artist, name: artist }] : [],
@@ -678,7 +742,23 @@ export async function browse({ page }) {
 
   if (page === "folders" || page.startsWith("folder:")) {
     const isRoot = page === "folders" || page === "folder:root" || page === "folder:";
-    const folderId = isRoot ? "" : page.replace(/^folder:/, "");
+    let folderId = "";
+    let folderTitle = "";
+
+    if (!isRoot) {
+      const rest = page.replace(/^folder:/, "");
+      const colonIdx = rest.indexOf(":");
+      if (colonIdx !== -1) {
+        folderId = rest.slice(0, colonIdx);
+        try {
+          folderTitle = decodeURIComponent(rest.slice(colonIdx + 1));
+        } catch {
+          folderTitle = rest.slice(colonIdx + 1);
+        }
+      } else {
+        folderId = rest;
+      }
+    }
 
     const params = {
       limit: "2000",
@@ -693,21 +773,31 @@ export async function browse({ page }) {
     const subfolders = items.filter((it) => it.type === "folder");
     const files = items.filter((it) => it.type === "file");
 
+    const folderCoverUrl = sess?.baseUrl && folderId
+      ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getfoldercover&id=${encodeURIComponent(folderId)}&_sid=${sess.sid}`
+      : "";
+
     const sections = [];
     if (subfolders.length > 0) {
       sections.push({
         title: subfolders.length > 0 && files.length > 0 ? "子文件夹" : undefined,
-        links: subfolders.map((f) => ({
-          text: f.title || f.path?.split("/").pop() || "未命名文件夹",
-          page: `folder:${f.id}`,
-          type: "folder",
-        })),
+        links: subfolders.map((f) => {
+          const fTitle = f.title || f.path?.split("/").pop() || "未命名文件夹";
+          return {
+            title: fTitle,
+            name: fTitle,
+            text: fTitle,
+            page: `folder:${f.id}:${encodeURIComponent(fTitle)}`,
+            type: "folder",
+            icon: "playlist",
+          };
+        }),
       });
     }
     if (files.length > 0) {
       sections.push({
         title: subfolders.length > 0 ? "曲目" : undefined,
-        tracks: files.map((s) => toTrack(s, sess)),
+        tracks: files.map((s) => toTrack(s, sess, folderCoverUrl)),
       });
     }
 
@@ -716,19 +806,30 @@ export async function browse({ page }) {
     let subtitle = "群晖 NAS 音乐目录";
     if (!isRoot) {
       const sampleItem = items[0];
+      let pathDir = "";
       if (sampleItem?.path) {
         const parts = sampleItem.path.split("/").filter(Boolean);
         const dirParts = parts.slice(0, -1);
-        title = dirParts[dirParts.length - 1] || "文件夹";
-        subtitle = "/" + dirParts.join("/");
+        pathDir = "/" + dirParts.join("/");
+        title = folderTitle || dirParts[dirParts.length - 1] || "文件夹";
       } else {
-        title = `文件夹 (${folderId})`;
+        title = folderTitle || `文件夹 (${folderId})`;
       }
+      subtitle = pathDir || `目录: ${title}`;
     }
+
+    const countParts = [];
+    if (subfolders.length > 0) {
+      countParts.push(`${subfolders.length} 个文件夹`);
+    }
+    if (files.length > 0) {
+      countParts.push(`${files.length} 首曲目`);
+    }
+    const countStr = countParts.length > 0 ? `共 ${countParts.join(", ")}` : "空文件夹";
 
     return {
       title,
-      subtitle: `${subtitle} · 共 ${subfolders.length} 个文件夹, ${files.length} 首曲目`,
+      subtitle: `${subtitle} · ${countStr}`,
       sections,
     };
   }
@@ -829,22 +930,71 @@ export async function playlist({ id }) {
 
 export async function album({ id }) {
   const sess = await requireSession();
-  const data = await synoRequest("SYNO.AudioStation.Song", "list", 3, {
-    album: id,
+  const [albumName, artistName] = id.includes("///") ? id.split("///") : [id, ""];
+
+  const params = {
+    album: albumName,
     additional: "song_audio,song_tag",
     limit: "1000",
-  });
-  const songs = data.songs || [];
-  const firstSong = songs[0];
-  const artistName =
-    firstSong?.additional?.song_tag?.album_artist ||
-    firstSong?.additional?.song_tag?.artist ||
-    firstSong?.artist ||
+  };
+  if (artistName) {
+    params.artist = artistName;
+  }
+
+  let data = await synoRequest("SYNO.AudioStation.Song", "list", 3, params);
+  let songs = data.songs || [];
+
+  // If artist filter returned 0 songs, retry without artist filter as fallback
+  if (songs.length === 0 && artistName) {
+    const fallbackData = await synoRequest("SYNO.AudioStation.Song", "list", 3, {
+      album: albumName,
+      additional: "song_audio,song_tag",
+      limit: "1000",
+    });
+    if (fallbackData.songs?.length > 0) {
+      songs = fallbackData.songs;
+    }
+  }
+
+  const effectiveArtist =
+    artistName ||
+    songs[0]?.additional?.song_tag?.album_artist ||
+    songs[0]?.additional?.song_tag?.artist ||
+    songs[0]?.artist ||
     "";
 
+  // Build album cover URL
+  let albumCoverUrl = sess?.baseUrl
+    ? `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getcover&album_name=${encodeURIComponent(albumName)}&album_artist_name=${encodeURIComponent(effectiveArtist)}&_sid=${sess.sid}`
+    : "";
+
+  // Check if album cover on NAS exists; if 404, fallback to cloud cover or first song cover
+  if (albumCoverUrl) {
+    try {
+      const probe = await fetch(albumCoverUrl, { method: "HEAD" });
+      if (probe.status !== 200) {
+        // Fallback 1: Try cloud cover (NetEase / iTunes)
+        const cloudCover = await fetchCloudCover(albumName, effectiveArtist);
+        if (cloudCover) {
+          albumCoverUrl = cloudCover;
+        } else if (songs[0]?.id) {
+          // Fallback 2: Try first song's embedded cover
+          albumCoverUrl = `${sess.baseUrl}/webapi/AudioStation/cover.cgi?api=SYNO.AudioStation.Cover&version=3&method=getsongcover&id=${encodeURIComponent(songs[0].id)}&_sid=${sess.sid}`;
+        }
+      }
+    } catch {
+      // Keep synology cover url on network probe error
+    }
+  }
+
   return {
-    album: toAlbum({ name: id, display_artist: artistName }, sess),
-    tracks: songs.map((s) => toTrack(s, sess)),
+    album: {
+      id,
+      name: albumName,
+      imageUrl: albumCoverUrl,
+      artists: effectiveArtist ? [{ id: effectiveArtist, name: effectiveArtist }] : [],
+    },
+    tracks: songs.map((s) => toTrack(s, sess, albumCoverUrl)),
   };
 }
 
