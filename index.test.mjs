@@ -761,4 +761,91 @@ test("signIn automatically upgrades from HTTP to HTTPS when server responds with
   assert.equal(session.sid, "https_sid_123");
 });
 
+// 19. Transcode policy and quality selection
+test("stream transcodes lossless flac to mp3 when standard quality is requested", async () => {
+  const initialSession = {
+    baseUrl: "http://192.168.1.50:5000",
+    sid: "sid_test",
+    username: "user",
+    account: { id: "user", name: "user" },
+  };
+
+  const handler = async (url) => {
+    if (url.includes("api=SYNO.AudioStation.Song&method=getinfo")) {
+      return jsonResponse({
+        success: true,
+        data: {
+          songs: [
+            {
+              id: "music_flac_1",
+              additional: {
+                song_audio: {
+                  container: "flac",
+                  codec: "flac",
+                  lossless: true,
+                  bitrate: 4500000,
+                  filesize: 65000000,
+                },
+              },
+            },
+          ],
+        },
+      });
+    }
+    throw new Error(`Unhandled: ${url}`);
+  };
+
+  const { plugin } = await setup(handler, {}, { session: initialSession });
+  const streamInfo = await plugin.stream({ id: "music_flac_1", quality: "standard" });
+
+  assert.equal(streamInfo.type, "mp3");
+  assert.equal(streamInfo.bitRate, 320000);
+  assert.ok(streamInfo.url.includes("method=transcode"));
+  assert.ok(streamInfo.url.includes("format=mp3"));
+});
+
+// 20. Direct lossless streaming when lossless is requested on direct LAN connection
+test("stream retains direct flac stream when lossless quality is requested on local network", async () => {
+  const initialSession = {
+    baseUrl: "http://192.168.1.50:5000",
+    sid: "sid_test",
+    username: "user",
+    account: { id: "user", name: "user" },
+  };
+
+  const handler = async (url) => {
+    if (url.includes("api=SYNO.AudioStation.Song&method=getinfo")) {
+      return jsonResponse({
+        success: true,
+        data: {
+          songs: [
+            {
+              id: "music_flac_2",
+              additional: {
+                song_audio: {
+                  container: "flac",
+                  codec: "flac",
+                  lossless: true,
+                  bitrate: 2800000,
+                  filesize: 40000000,
+                },
+              },
+            },
+          ],
+        },
+      });
+    }
+    throw new Error(`Unhandled: ${url}`);
+  };
+
+  const { plugin } = await setup(handler, {}, { session: initialSession });
+  const streamInfo = await plugin.stream({ id: "music_flac_2", quality: "lossless" });
+
+  assert.equal(streamInfo.type, "flac");
+  assert.equal(streamInfo.bitRate, 2800000);
+  assert.ok(streamInfo.url.includes("method=stream"));
+  assert.ok(!streamInfo.url.includes("method=transcode"));
+});
+
+
 

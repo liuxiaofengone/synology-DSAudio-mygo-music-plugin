@@ -1310,7 +1310,7 @@ export async function lyrics({ id }) {
   return null;
 }
 
-export async function stream({ id }) {
+export async function stream({ id, quality }) {
   const sess = await requireSession();
 
   let songInfo = null;
@@ -1333,11 +1333,36 @@ export async function stream({ id }) {
   }
 
   const supportedFormats = ["mp3", "flac", "ogg", "wav", "m4a", "aac"];
+  const isUnsupported = !supportedFormats.includes(ext);
+
+  // Transcode policy: auto (default) | always | lossless
+  const policy = (host.setting("transcode") || "auto").toLowerCase();
+  const isLossless = Boolean(audio.lossless) || ext === "flac" || ext === "wav" || ext === "ape" || ext === "dsf" || ext === "dff";
+  const isRelay = sess.baseUrl.includes("synr-") || sess.baseUrl.includes("quickconnect.cn") || sess.baseUrl.includes("quickconnect.to");
+
+  let shouldTranscode = isUnsupported;
+  if (!shouldTranscode) {
+    if (policy === "always") {
+      shouldTranscode = isLossless || (audio.bitrate && audio.bitrate > 320000);
+    } else if (policy === "lossless") {
+      shouldTranscode = false;
+    } else {
+      // auto policy:
+      if (quality === "standard") {
+        shouldTranscode = true;
+      } else if (quality === "high" && isLossless) {
+        shouldTranscode = true;
+      } else if (isRelay && isLossless && (!audio.bitrate || audio.bitrate > 900000)) {
+        shouldTranscode = true;
+      }
+    }
+  }
+
   let method = "stream";
   let streamFile = `0.${ext}`;
   let formatParam = "";
 
-  if (!supportedFormats.includes(ext)) {
+  if (shouldTranscode) {
     method = "transcode";
     ext = "mp3";
     streamFile = "0.mp3";
@@ -1346,12 +1371,16 @@ export async function stream({ id }) {
 
   const streamUrl = `${sess.baseUrl}/webapi/AudioStation/stream.cgi/${streamFile}?api=SYNO.AudioStation.Stream&version=2&method=${method}&id=${encodeURIComponent(id)}&_sid=${sess.sid}${formatParam}`;
 
+  const resolvedQuality = shouldTranscode
+    ? (quality === "standard" ? "standard" : "high")
+    : (audio.lossless ? "lossless" : (audio.bitrate >= 256000 ? "high" : "standard"));
+
   return {
     url: streamUrl,
     type: ext,
-    size: audio.filesize || 0,
-    bitRate: audio.bitrate || 0,
-    quality: audio.lossless ? "lossless" : (audio.bitrate >= 256000 ? "high" : "standard"),
+    size: shouldTranscode ? 0 : (audio.filesize || 0),
+    bitRate: shouldTranscode ? 320000 : (audio.bitrate || 0),
+    quality: resolvedQuality,
     headers: {
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) MyGo-Music/1.0",
     },

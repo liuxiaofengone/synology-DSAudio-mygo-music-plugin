@@ -18,7 +18,10 @@
 
 - **QuickConnect 智能寻址**：直接输入群晖 QuickConnect ID，插件自动查询群晖中央服务器，并探测局域网内网 IP、公网 WAN/DDNS 端口，优先建立最低延迟的高速直连。
 - **直连与内网穿透兼容**：除 QuickConnect ID 外，也支持直接填写内网 IP（如 `192.168.1.50:5000`）、域名或 Tailscale / WireGuard / 穿透节点地址。
-- **无缝音频流播放**：支持 FLAC、APE、WAV、MP3、AAC、OGG 等多种主流格式，原生支持无损音质（Lossless）与 HTTP Range 拖拽定位。原生支持 MP4/M4A 容器直接串流，对于播放器不支持的非常规格式自动走群晖硬件实时转码。
+- **无缝音频流播放与智能转码**：
+  - 支持 FLAC、APE、WAV、MP3、AAC、OGG 等多种主流格式，原生支持无损音质（Lossless）与 HTTP Range 拖拽定位。
+  - **外网自适应转码**：针对外网中继（QuickConnect Relay）或移动网络下超高码率无损音频（24-bit/96kHz 等）容易卡顿的问题，完美联动 MyGo Music 客户端音质偏好（标准/高音质/无损）或插件转码策略，由群晖 NAS 硬件实时转码为 320kbps MP3，体积大幅缩减至 1/10，彻底告别缓冲卡顿。
+  - **自动预缓冲与本地离线缓存**：播放当前歌曲时自动在后台静默预载下一首歌曲（Prefetch Ahead），已播歌曲自动写入客户端本地磁盘缓存，二次播放零耗流秒开。
 - **媒体库全能浏览**：
   - 最近添加、随心漫游、热门专辑与个人歌单主页汇聚
   - 全部歌曲、专辑列表、歌手列表分类浏览
@@ -57,10 +60,10 @@ mygo-music://install-plugin?repo=liuxiaofengone/synology-DSAudio-mygo-music-plug
    ```bash
    npm run pack
    ```
-   打包产物位于 `dist/synology-audio-0.1.2.zip`。
+   打包产物位于 `dist/synology-audio-0.1.3.zip`。
 2. 打开 **MyGo Music** 客户端。
 3. 进入 **设置** -> **插件** -> 点击右上角 **`+`** 号。
-4. 选择 **从本机 ZIP 安装**，选取 `dist/synology-audio-0.1.2.zip` 即可完成安装。
+4. 选择 **从本机 ZIP 安装**，选取 `dist/synology-audio-0.1.3.zip` 即可完成安装。
 
 ### 方式三：手动放置到插件目录
 
@@ -80,6 +83,7 @@ mygo-music://install-plugin?repo=liuxiaofengone/synology-DSAudio-mygo-music-plug
 | **用户名** | DSM 登录用户名 | `admin` |
 | **密码** | DSM 登录密码 | `******` |
 | **2FA 动态验证码 (可选)** | 若群晖账号开启了双重验证，首次登录时填写当前 6 位动态验证码 | `123456` |
+| **高清音频外网转码策略** | 智能自适应 (推荐) / 总是转码 / 始终原盘无损 | `auto` |
 
 配置完成后：
 1. 在主界面左上角或侧边栏将音频源切换至 **群晖 Audio Station**。

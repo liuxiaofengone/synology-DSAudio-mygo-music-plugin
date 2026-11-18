@@ -1,7 +1,7 @@
 {
   "id": "synology-audio",
   "name": "群晖 Audio Station",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "minAppVersion": "0.1.8",
   "main": "index.js",
   "playback": "stream",
@@ -22,12 +22,24 @@
     {
       "key": "password",
       "label": "密码",
+      "type": "password",
       "help": "DSM 登录密码"
     },
     {
       "key": "otp",
       "label": "2FA 动态验证码 (可选)",
       "help": "若账号开启了两步验证，首次登录时在此填写 6 位动态验证码"
+    },
+    {
+      "key": "transcode",
+      "label": "高清音频外网转码策略",
+      "type": "select",
+      "help": "在外网或中继连接时，对超高码率无损音频启用群晖实时转码，彻底消除播放卡顿",
+      "options": [
+        { "value": "auto", "label": "智能自适应 (按客户端音质偏好与网络环境决策，推荐)" },
+        { "value": "always", "label": "总是转码 (全环境转码为 320kbps 高品质 MP3)" },
+        { "value": "lossless", "label": "始终原盘无损 (需大带宽网络支持)" }
+      ]
     }
   ],
   "navigation": [
