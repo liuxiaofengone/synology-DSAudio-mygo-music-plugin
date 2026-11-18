@@ -98,7 +98,11 @@ function isQuickConnectId(server) {
 function normalizeServerUrl(server) {
   let url = server.trim().replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(url)) {
-    url = `http://${url}`;
+    if (url.includes(":5001") || url.includes(":443")) {
+      url = `https://${url}`;
+    } else {
+      url = `http://${url}`;
+    }
   }
   return url;
 }
@@ -115,7 +119,13 @@ async function probeCandidate(baseUrl, expectedEzid) {
       method: "GET",
       signal: controller.signal,
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (res.status === 400 && baseUrl.startsWith("http://")) {
+        const httpsUrl = baseUrl.replace(/^http:\/\//i, "https://");
+        return await probeCandidate(httpsUrl, expectedEzid);
+      }
+      return null;
+    }
     const json = await res.json();
     if (json && json.success) {
       if (expectedEzid && json.ezid && json.ezid.toLowerCase() !== expectedEzid.toLowerCase()) {
@@ -270,12 +280,14 @@ async function resolveQuickConnect(qcId) {
 
     // Relay Tunnel (relay_dn / relay_ip)
     if (svc.relay_dn && svc.relay_port) {
-      addCandidate("http", svc.relay_dn, svc.relay_port, 5);
-      if (svc.https_port) addCandidate("https", svc.relay_dn, svc.https_port, 5);
+      addCandidate(proto, svc.relay_dn, svc.relay_port, 5);
+      addCandidate(proto === "https" ? "http" : "https", svc.relay_dn, svc.relay_port, 6);
+      if (svc.https_port && proto === "https") addCandidate("https", svc.relay_dn, svc.https_port, 5);
     }
     if (svc.relay_ip && svc.relay_port) {
-      addCandidate("http", svc.relay_ip, svc.relay_port, 5);
-      if (svc.https_port) addCandidate("https", svc.relay_ip, svc.https_port, 5);
+      addCandidate(proto, svc.relay_ip, svc.relay_port, 5);
+      addCandidate(proto === "https" ? "http" : "https", svc.relay_ip, svc.relay_port, 6);
+      if (svc.https_port && proto === "https") addCandidate("https", svc.relay_ip, svc.https_port, 5);
     }
   };
 
@@ -302,12 +314,14 @@ async function resolveQuickConnect(qcId) {
     return successful[0].url;
   }
 
-  // Fallback to relay address if available
+  // Fallback to relay address if available, matching protocol of the server profile
+  const fallbackProto = httpsInfo ? "https" : "http";
+  const fallbackInfo = httpsInfo || httpInfo;
   const relayFallback =
-    primary.service?.relay_dn && primary.service?.relay_port
-      ? `http://${primary.service.relay_dn}:${primary.service.relay_port}`
-      : primary.service?.relay_ip && primary.service?.relay_port
-      ? `http://${primary.service.relay_ip}:${primary.service.relay_port}`
+    fallbackInfo?.service?.relay_dn && fallbackInfo?.service?.relay_port
+      ? `${fallbackProto}://${fallbackInfo.service.relay_dn}:${fallbackInfo.service.relay_port}`
+      : fallbackInfo?.service?.relay_ip && fallbackInfo?.service?.relay_port
+      ? `${fallbackProto}://${fallbackInfo.service.relay_ip}:${fallbackInfo.service.relay_port}`
       : `https://${id}.quickconnect.to`;
 
   return relayFallback;
@@ -716,7 +730,45 @@ export async function signIn() {
       body: authParams.toString(),
     });
   } catch (err) {
-    throw new Error(`连接群晖登录服务失败 (${baseUrl}): ${err.message}`);
+    if (baseUrl.startsWith("http://")) {
+      const httpsBaseUrl = baseUrl.replace(/^http:\/\//i, "https://");
+      try {
+        const retryRes = await fetch(`${httpsBaseUrl}/webapi/entry.cgi`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: authParams.toString(),
+        });
+        if (retryRes.ok) {
+          authRes = retryRes;
+          baseUrl = httpsBaseUrl;
+        } else {
+          throw err;
+        }
+      } catch {
+        throw new Error(`连接群晖登录服务失败 (${baseUrl}): ${err.message}`);
+      }
+    } else {
+      throw new Error(`连接群晖登录服务失败 (${baseUrl}): ${err.message}`);
+    }
+  }
+
+  // If plain HTTP was sent to an HTTPS port, Nginx returns HTTP 400.
+  // Also handle redirect status codes by upgrading to HTTPS.
+  if (!authRes.ok) {
+    if ((authRes.status === 400 || (authRes.status >= 301 && authRes.status <= 308)) && baseUrl.startsWith("http://")) {
+      const httpsBaseUrl = baseUrl.replace(/^http:\/\//i, "https://");
+      try {
+        const retryRes = await fetch(`${httpsBaseUrl}/webapi/entry.cgi`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: authParams.toString(),
+        });
+        if (retryRes.ok) {
+          authRes = retryRes;
+          baseUrl = httpsBaseUrl;
+        }
+      } catch {}
+    }
   }
 
   if (!authRes.ok) {

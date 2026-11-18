@@ -57,10 +57,10 @@ mygo-music://install-plugin?repo=liuxiaofengone/synology-DSAudio-mygo-music-plug
    ```bash
    npm run pack
    ```
-   打包产物位于 `dist/synology-audio-0.1.0.zip`。
+   打包产物位于 `dist/synology-audio-0.1.2.zip`。
 2. 打开 **MyGo Music** 客户端。
 3. 进入 **设置** -> **插件** -> 点击右上角 **`+`** 号。
-4. 选择 **从本机 ZIP 安装**，选取 `dist/synology-audio-0.1.0.zip` 即可完成安装。
+4. 选择 **从本机 ZIP 安装**，选取 `dist/synology-audio-0.1.2.zip` 即可完成安装。
 
 ### 方式三：手动放置到插件目录
 

@@ -731,3 +731,34 @@ test("suggest returns deduplicated song, album, and artist suggestions", async (
   ]);
 });
 
+// 18. Auto upgrade to HTTPS on HTTP 400 (Nginx "plain HTTP request sent to HTTPS port")
+test("signIn automatically upgrades from HTTP to HTTPS when server responds with HTTP 400", async () => {
+  const settings = {
+    server: "192.168.1.100:5001",
+    username: "admin",
+    password: "password123",
+  };
+
+  const handler = async (url) => {
+    if (url.startsWith("http://192.168.1.100:5001/webapi/entry.cgi")) {
+      return jsonResponse({ error: "plain HTTP sent to HTTPS port" }, 400);
+    }
+    if (url.startsWith("https://192.168.1.100:5001/webapi/entry.cgi")) {
+      return jsonResponse({
+        success: true,
+        data: { sid: "https_sid_123" },
+      });
+    }
+    throw new Error(`Unhandled: ${url}`);
+  };
+
+  const { plugin, storageMap } = await setup(handler, settings);
+  const acc = await plugin.signIn();
+
+  assert.equal(acc.id, "admin");
+  const session = storageMap.get("session");
+  assert.equal(session.baseUrl, "https://192.168.1.100:5001");
+  assert.equal(session.sid, "https_sid_123");
+});
+
+
